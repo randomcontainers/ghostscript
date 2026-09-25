@@ -177,3 +177,7 @@ The ImageMagick default image and the combined images that include Ghostscript a
 If you redistribute these images, or offer a modified Ghostscript to users over a network, read what the AGPL requires of you. Artifex also sells [commercial licenses](https://artifex.com/licensing/) for use under other terms.
 
 The files in this repository are available under the MIT license, see [LICENSE](LICENSE).
+
+## Requesting a tool
+
+To suggest another tool, use the [Request a tool](https://github.com/randomcontainers/.github/issues/new?template=tool-request.yml) form.
