@@ -1,0 +1,53 @@
+name: ghostscript
+title: Ghostscript
+summary: Renders and converts PostScript and PDF files, and merges and compresses PDFs.
+homepage: https://www.ghostscript.com/
+license: AGPL-3.0-or-later AND Apache-2.0 AND BSD-3-Clause AND FTL AND ISC AND MIT AND Zlib
+source-release: true
+upstream:
+  source: github-release
+  repository: ArtifexSoftware/ghostpdl-downloads
+  # Release tags look like gs10080 for 10.08.0; release candidates (gs10080rc1) do not match.
+  tag-pattern: '^gs(\d+)(\d{2})(\d)$'
+  version-template: '{1}.{2}.{3}'
+  versioning: loose
+  version: 10.08.0
+  artifact:
+    url: https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs{nodots}/ghostscript-{version}.tar.xz
+    checksums:
+      url: https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs{nodots}/SHA512SUMS
+      algorithm: sha512
+    sha256: c20492bc8ebb96c87fa2e52a0926e1cda8cde95d66145e018ac713fed5da38cf
+funding: []
+image:
+  entrypoint: [gs]
+  cmd: [--help]
+test:
+  - test "$(gs --version)" = "$VERSION"
+  - |
+    # Times-Roman has to resolve to the URW font shipped under /usr/local, not a substitute.
+    gs -dNODISPLAY -dBATCH -c '/Times-Roman findfont pop' 2>&1 \
+      | grep -qF "Loading NimbusRoman-Regular font from /usr/local/share/ghostscript/$VERSION/Resource/Font/"
+  - |
+    printf '%s\n' '%!PS' '/Times-Roman findfont 36 scalefont setfont' '72 700 moveto (Hello from Ghostscript) show' showpage > hello.ps
+    gs -q -sDEVICE=pdfwrite -o hello.pdf hello.ps
+    gs -q -sDEVICE=png16m -r72 -o hello.png hello.ps
+    ps2pdf hello.ps hello-ps2pdf.pdf
+    test "$(head -c 5 hello.pdf)" = %PDF-
+    test "$(head -c 5 hello-ps2pdf.pdf)" = %PDF-
+    test "$(head -c 4 hello.png | tail -c 3)" = PNG
+    gs -q -sDEVICE=png16m -r72 -o page-%d.png hello.pdf
+    test "$(head -c 4 page-1.png | tail -c 3)" = PNG
+    gs -q -sDEVICE=txtwrite -o - hello.pdf | grep -q 'Hello from Ghostscript'
+  - |
+    # SAFER is the default: PostScript cannot open files outside the permitted paths.
+    test "$(gs -q -dNODISPLAY -dBATCH -c '{ (/etc/passwd) (r) file } stopped { (blocked) } { (readable) } ifelse =')" = blocked
+examples:
+  - title: Convert a PostScript file to PDF
+    command: docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" randomcontainers.com/ghostscript -sDEVICE=pdfwrite -o output.pdf input.ps
+  - title: Render every page of a PDF to a 150 dpi PNG
+    command: docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" randomcontainers.com/ghostscript -sDEVICE=png16m -r150 -o page-%03d.png input.pdf
+  - title: Make a PDF smaller by downsampling its images
+    command: docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" randomcontainers.com/ghostscript -sDEVICE=pdfwrite -dPDFSETTINGS=/ebook -o smaller.pdf input.pdf
+  - title: Merge several PDFs into one
+    command: docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" randomcontainers.com/ghostscript -sDEVICE=pdfwrite -o merged.pdf first.pdf second.pdf
