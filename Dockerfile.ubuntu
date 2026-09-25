@@ -1,0 +1,117 @@
+# syntax=docker/dockerfile:1.27.0@sha256:bde3983e9c939224420ddaf6b784cc30e09b035a4dea01f581230c50809f372e
+# check=error=true
+
+ARG BASE_IMAGE=ubuntu:26.04
+
+FROM ${BASE_IMAGE} AS build
+ARG DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+RUN dpkg-query -W -f '${Package}\n' | LC_ALL=C sort -u > /tmp/base-packages; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      curl \
+      libbrotli-dev \
+      libfontconfig-dev \
+      libfreetype-dev \
+      libjbig2dec0-dev \
+      libjpeg-dev \
+      libopenjp2-7-dev \
+      libpng-dev \
+      libtiff-dev \
+      pkgconf \
+      xz-utils \
+      zlib1g-dev; \
+    rm -rf /var/lib/apt/lists/*
+
+ARG VERSION
+ARG SOURCE_SHA256
+RUN printf '%s\n' "${VERSION}" | grep -Eqx '[0-9]+\.[0-9]{2}\.[0-9]+' \
+      || { echo "unexpected VERSION: ${VERSION}" >&2; exit 1; }; \
+    printf '%s\n' "${SOURCE_SHA256}" | grep -Eqx '[0-9a-f]{64}' \
+      || { echo "SOURCE_SHA256 must be the tarball's sha256" >&2; exit 1; }; \
+    tag="gs$(printf '%s' "${VERSION}" | tr -d .)"; \
+    url="https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/${tag}/ghostscript-${VERSION}.tar.xz"; \
+    curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 -o /tmp/ghostscript.tar.xz "$url"; \
+    echo "${SOURCE_SHA256}  /tmp/ghostscript.tar.xz" | sha256sum -c -; \
+    mkdir /src; \
+    tar -xJf /tmp/ghostscript.tar.xz -C /src --strip-components=1; \
+    rm /tmp/ghostscript.tar.xz; \
+    echo "$url" > /tmp/source-url
+
+# Use the distribution's libraries, except lcms2mt: Artifex's thread-safe
+# fork of Little CMS has no distribution package. OCR (Tesseract) and the
+# contributed printer drivers, which have licenses of their own, are left out.
+# FTL.TXT is kept for Ghostscript's TrueType interpreter, derived from FreeType.
+ARG JOBS
+WORKDIR /src
+RUN cp freetype/docs/FTL.TXT /tmp/; \
+    rm -rf brotli cups/libs freetype jbig2dec jpeg leptonica libpng openjpeg tesseract tiff zlib; \
+    ./configure \
+      --prefix=/usr/local \
+      --disable-compile-inits \
+      --disable-contrib \
+      --disable-cups \
+      --disable-dbus \
+      --disable-gtk \
+      --with-system-libtiff \
+      --without-libidn \
+      --without-libpaper \
+      --without-tesseract \
+      --without-x; \
+    make -j"${JOBS:-$(nproc)}"
+
+COPY runtime-deps.ubuntu /tmp/runtime-deps.extra
+# Files compiled into gs under other licenses keep their notice in the first
+# comment that has a copyright line.
+RUN make DESTDIR=/out install; \
+    rm -rf /out/usr/local/share/doc /out/usr/local/share/man; \
+    rm -f /out/usr/local/bin/dvipdf /out/usr/local/bin/lprsetup.sh /out/usr/local/bin/unix-lpr.sh; \
+    strip --strip-unneeded /out/usr/local/bin/gs; \
+    test "$(/out/usr/local/bin/gs --version)" = "${VERSION}"; \
+    meta=/out/usr/local/share/randomcontainers/ghostscript; \
+    mkdir -p "$meta/licenses"; \
+    cp LICENSE doc/COPYING DroidSansFallback.NOTICE /tmp/FTL.TXT "$meta/licenses/"; \
+    cp lcms2mt/COPYING "$meta/licenses/COPYING.lcms2mt"; \
+    for f in base/aes.c base/gsmd5.c base/gsstrl.c base/sha2.c devices/gdevifno.c ijs/ijs.c; do \
+      n="${f##*/}"; \
+      awk '/\/\*/ { c = 1; b = "" } c { b = b $0 "\n" } c && /\*\// { c = 0; if (b ~ /Copyright/) { printf "%s", b; exit } }' \
+        "$f" > "$meta/licenses/COPYING.${n%.*}"; \
+      test -s "$meta/licenses/COPYING.${n%.*}"; \
+    done; \
+    echo "${VERSION}" > "$meta/version"; \
+    cp /tmp/source-url "$meta/source"; \
+    { \
+      echo "source-sha256=${SOURCE_SHA256}"; \
+      echo "configure=$(sed -n 's/^  \$ \.\/configure //p' config.log)"; \
+      echo "compiler=$(cc --version | sed -n 1p)"; \
+    } > "$meta/buildinfo"; \
+    export LC_ALL=C; \
+    find /out/usr/local -type f | while read -r f; do \
+      if readelf -h "$f" > /dev/null 2>&1; then \
+        readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]$/\1/p'; \
+      fi; \
+    done | sort -u | while read -r so; do \
+      if [ -n "$(find /out/usr/local -name "$so")" ]; then continue; fi; \
+      lib="$(ldconfig -p | awk -v so="$so" '$1 == so && !found { print $NF; found = 1 }')"; \
+      if [ -z "$lib" ]; then echo "no library for $so" >&2; exit 1; fi; \
+      dpkg-query -S "$(readlink -f "$lib")" | sed -n '1s/:.*//p'; \
+    done | sort -u | comm -23 - /tmp/base-packages > /tmp/runtime-deps.elf; \
+    test -s /tmp/runtime-deps.elf; \
+    cat /tmp/runtime-deps.elf /tmp/runtime-deps.extra | sort -u > "$meta/runtime-deps"
+
+FROM ${BASE_IMAGE} AS slim
+ARG DEBIAN_FRONTEND=noninteractive
+RUN --mount=type=bind,from=build,source=/out/usr/local/share/randomcontainers/ghostscript/runtime-deps,target=/tmp/runtime-deps \
+    set -eu; \
+    apt-get update; \
+    xargs apt-get install -y --no-install-recommends ca-certificates tini < /tmp/runtime-deps; \
+    rm -rf /var/lib/apt/lists/*; \
+    install -d -m 1777 /work /cache
+COPY --link --from=build /out/usr/local/ /usr/local/
+ENV LANG=C.UTF-8 XDG_CACHE_HOME=/cache
+WORKDIR /work
+USER 1000:1000
+ENTRYPOINT ["tini", "--", "gs"]
+CMD ["--help"]
