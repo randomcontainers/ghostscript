@@ -48,7 +48,7 @@ Not included: CUPS output, the X11 and GTK display devices, the contributed prin
 
 ## Default or slim
 
-Ghostscript's default image adds no other tools, so `latest` and `slim` are the same image, with the contents listed above. Use `latest` to run it and the `slim` tags as a base for your own image. The default image of [ImageMagick](https://github.com/randomcontainers/imagemagick) includes this build of Ghostscript, for reading PDF and PostScript files.
+Ghostscript's default image adds no other tools, so `latest` and `slim` are the same image, with the contents listed above. Use `latest` to run it and the `slim` tags as a base for your own image. The default images of [ImageMagick](https://github.com/randomcontainers/imagemagick) and [qpdf](https://github.com/randomcontainers/qpdf) include this build of Ghostscript.
 
 ## Tags
 
